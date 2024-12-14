@@ -3,6 +3,12 @@ import pandas as pd
 import io
 from datetime import datetime
 import base64
+import pyodbc
+import hashlib
+
+# Configuração inicial
+st.set_page_config(page_title="Tratamento de Dados", page_icon="imagens/TATICO_logotipo_01_colorido simbolo.png",
+                   layout="centered")
 
 # Variáveis globais
 df_composicoes = None
@@ -18,6 +24,7 @@ if "processando_orcamento" not in st.session_state:
     st.session_state["processando_orcamento"] = False
 if "processando_servicos" not in st.session_state:
     st.session_state["processando_servicos"] = False
+
 
 # Função para comparar e retornar o código correspondente
 def comparar_composicoes(desc_serv, df_composicoes):
@@ -63,7 +70,6 @@ def formatar_codigo(row):
     return codigo_str  # Retorna o código original se não for uma string ou não precisar ser formatado
 
 
-
 def abrir_eap_padrao():
     global mapa_descritivo, mapa_descritivo2, df_eap_padrao
     arquivo_eap = st.file_uploader("Selecione o arquivo EAP Padrão", type=["xlsx"], key="eap")
@@ -92,6 +98,7 @@ def abrir_eap_padrao():
         except Exception as e:
             st.error("Erro ao importar a EAP Padrão!")
 
+
 def abrir_arquivo_composicoes():
     global df_composicoes
     if st.session_state["etapa1_concluida"]:
@@ -118,156 +125,219 @@ def abrir_arquivo_composicoes():
             except ValueError as e:
                 st.error("Erro ao importar o arquivo de composições!")
 
+def calcular_hash_arquivo(arquivo):
+    # Calcular o hash do arquivo para identificar se ele foi alterado
+    md5_hash = hashlib.md5()
+    arquivo_bytes = arquivo.getvalue()  # Obtém o conteúdo do arquivo como bytes
+    md5_hash.update(arquivo_bytes)
+    return md5_hash.hexdigest()
+
 def abrir_arquivo_orcamento():
     if st.session_state["etapa2_concluida"]:
         arquivo_orcamento = st.file_uploader("Selecione o arquivo de orçamento (.xlsx)", type=["xlsx"])
-        if arquivo_orcamento and not st.session_state["processando_orcamento"]:
-            if st.button("Parar Processamento"):
-                st.warning("Processamento interrompido pelo usuário!")
-                return  # Sai da função imediatamente
 
-            with st.spinner("Processando arquivo de orçamento..."):
-                try:
-                   df = pd.read_excel(arquivo_orcamento)
+        # Verificar se o arquivo foi alterado
+        if arquivo_orcamento:
+            arquivo_hash = calcular_hash_arquivo(arquivo_orcamento)
 
-                   # Verificar colunas necessárias
-                   colunas_necessarias = ['ID', 'Código', 'Descrição', 'Preço Total']
-                   if not all(col in df.columns for col in colunas_necessarias):
-                       st.error(f"O arquivo não possui as colunas necessárias: {', '.join(colunas_necessarias)}")
-                       return
+            # Se o hash for diferente do armazenado, reiniciar o processo
+            if arquivo_hash != st.session_state.get("ultimo_hash_arquivo", ""):
+                st.session_state["processando_orcamento"] = False
+                st.session_state["ultimo_hash_arquivo"] = arquivo_hash
 
-                   # Mapeamento de IDs
-                   valores_unicos_id = df['ID'].unique()
-                   if set(valores_unicos_id) == {3, 7, 11, 15}:
-                       mapeamento_ids = {3: 1, 7: 2, 11: 3, 15: 4}
-                       df['ID'] = df['ID'].map(mapeamento_ids)
+            if not st.session_state["processando_orcamento"]:
+                if st.button("Parar Processamento"):
+                    st.warning("Processamento interrompido pelo usuário!")
+                    return  # Sai da função imediatamente
 
-                   # Criar colunas de níveis
-                   df['Código Formatado'] = df.apply(formatar_codigo, axis=1)
-                   df['Orc Nivel 1'] = df['Código Formatado'] + ' ' + df['Descrição']
+                with st.spinner("Processando arquivo de orçamento..."):
+                    try:
+                        df = pd.read_excel(arquivo_orcamento)
 
-                   df_filtrado1 = df[df['ID'].isin([2, 3, 4])]
-                   df_filtrado1['Orc Nivel 2'] = df_filtrado1['Código Formatado'] + ' ' + df_filtrado1['Descrição']
+                        # Verificar colunas necessárias
+                        colunas_necessarias = ['ID', 'Código', 'Descrição', 'Preço Total']
+                        if not all(col in df.columns for col in colunas_necessarias):
+                            st.error(f"O arquivo não possui as colunas necessárias: {', '.join(colunas_necessarias)}")
+                            return
 
-                   df_filtrado2 = df_filtrado1[df_filtrado1['ID'].isin([3, 4])]
-                   df_filtrado2['Orc Nivel 3'] = df_filtrado2['Código Formatado'] + ' ' + df_filtrado2['Descrição']
+                        # Mapeamento de IDs
+                        valores_unicos_id = df['ID'].unique()
+                        if set(valores_unicos_id) == {3, 7, 11, 15}:
+                            mapeamento_ids = {3: 1, 7: 2, 11: 3, 15: 4}
+                            df['ID'] = df['ID'].map(mapeamento_ids)
 
-                   df_filtrado = df_filtrado2[df_filtrado2['ID'] == 4]
-                   df_filtrado = df_filtrado[
-                       ['ID', 'Código', 'Orc Nivel 1', 'Orc Nivel 2', 'Orc Nivel 3', 'Descrição', 'Preço Total']]
-                   df_filtrado.rename(columns={'Descrição': 'Serviço'}, inplace=True)
-                   df_filtrado['Serviço'] = df_filtrado['Serviço'].str.upper()
+                        # Criar colunas de níveis
+                        df['Código Formatado'] = df.apply(formatar_codigo, axis=1)
+                        df['Orc Nivel 1'] = df['Código Formatado'] + ' ' + df['Descrição']
 
-                   # Aplicar lógica de tipos
-                   filtro_estimativas = df_filtrado['Serviço'].str.contains('ESTIMATIVA', case=False, na=False)
-                   filtro_mao_de_obra = df_filtrado['Serviço'].str.contains('MÃO DE OBRA|MOP|MOE', case=False, na=False)
+                        df_filtrado1 = df[df['ID'].isin([2, 3, 4])]
+                        df_filtrado1['Orc Nivel 2'] = df_filtrado1['Código Formatado'] + ' ' + df_filtrado1['Descrição']
 
-                   df_filtrado['Tipo'] = 'MAT | TERC | ADM'
-                   df_filtrado.loc[filtro_estimativas, 'Tipo'] = 'EST'
-                   df_filtrado.loc[filtro_mao_de_obra, 'Tipo'] = 'MO'
+                        df_filtrado2 = df_filtrado1[df_filtrado1['ID'].isin([3, 4])]
+                        df_filtrado2['Orc Nivel 3'] = df_filtrado2['Código Formatado'] + ' ' + df_filtrado2['Descrição']
 
-                   # Adicionar alocação
-                   df_filtrado['CodNivel2'] = df_filtrado['Serviço'].apply(lambda x: comparar_composicoes(x, df_composicoes))
-                   df_filtrado['Alocação'] = df_filtrado['CodNivel2'].apply(determinar_alocacao)
+                        df_filtrado = df_filtrado2[df_filtrado2['ID'] == 4]
+                        df_filtrado = df_filtrado[
+                            ['ID', 'Código', 'Orc Nivel 1', 'Orc Nivel 2', 'Orc Nivel 3', 'Descrição', 'Preço Total']]
+                        df_filtrado.rename(columns={'Descrição': 'Serviço'}, inplace=True)
+                        df_filtrado['Serviço'] = df_filtrado['Serviço'].str.upper()
 
-                   # Exportar resultado
-                   output = io.BytesIO()
-                   with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                       df_filtrado.to_excel(writer, index=False, sheet_name='Orcamento Tratado')
-                   st.download_button("Baixar Orçamento Tratado", data=output.getvalue(), file_name="orcamento_tratado.xlsx",
-                                      mime="application/vnd.ms-excel")
+                        # Aplicar lógica de tipos
+                        filtro_estimativas = df_filtrado['Serviço'].str.contains('ESTIMATIVA', case=False, na=False)
+                        filtro_mao_de_obra = df_filtrado['Serviço'].str.contains('MÃO DE OBRA|MOP|MOE', case=False,
+                                                                                 na=False)
 
-                   st.success("Arquivo de orçamento processado com sucesso!")
-                   st.session_state["processando_orcamento"] = True
+                        df_filtrado['Tipo'] = 'MAT | TERC | ADM'
+                        df_filtrado.loc[filtro_estimativas, 'Tipo'] = 'EST'
+                        df_filtrado.loc[filtro_mao_de_obra, 'Tipo'] = 'MO'
 
-                except Exception as e:
-                   st.error(f"Erro: {e}")
+                        # Adicionar alocação
+                        df_filtrado['CodNivel2'] = df_filtrado['Serviço'].apply(
+                            lambda x: comparar_composicoes(x, df_composicoes))
+                        df_filtrado['Alocação'] = df_filtrado['CodNivel2'].apply(determinar_alocacao)
+
+                        # Exportar resultado
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df_filtrado.to_excel(writer, index=False, sheet_name='Orcamento Tratado')
+                        st.download_button("Baixar Orçamento Tratado", data=output.getvalue(),
+                                           file_name="orcamento_tratado.xlsx",
+                                           mime="application/vnd.ms-excel")
+
+                        st.success("Arquivo de orçamento processado com sucesso!")
+                        st.session_state["processando_orcamento"] = True
+
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
 
 
 def abrir_arquivo_servicos():
     global df_eap_padrao
+    global df_resultado
     # Upload do arquivo de serviços revisados
     if st.session_state["processando_orcamento"]:
-        arquivo_servicos_revisados = st.file_uploader("Selecione o arquivo de serviços revisados (.xlsx)", type=["xlsx"])
-        if arquivo_servicos_revisados and not st.session_state["processando_servicos"]:
-            with st.spinner("Processando arquivo de serviços..."):
-                try:
-                    print("Iniciando função: abrir_arquivo_servicos")
-                    df_servicos_revisados = pd.read_excel(arquivo_servicos_revisados)
-                    # Converta a coluna 'CodNivel2' para float com o formato especificado
-                    df_servicos_revisados['CodNivel2'] = df_servicos_revisados['CodNivel2'].apply(
-                        lambda x: '{:0>5.2f}'.format(float(x)))
-                    # Converter a coluna 'CodNivel2' para string
-                    df_servicos_revisados['CodNivel2'] = df_servicos_revisados['CodNivel2'].astype(str)
-                    # Extrair os dígitos antes do ponto da coluna 'CodNivel2'
-                    df_servicos_revisados['Digitos_CodNivel2'] = df_servicos_revisados['CodNivel2'].str.split('.').str[0]
-                    # Mapear os códigos da coluna 'Digitos_CodNivel2' no DataFrame df_servicos_revisados com os descritivos correspondentes no DataFrame df_eap_padrao
-                    df_servicos_revisados['DescrNivel1'] = df_servicos_revisados['Digitos_CodNivel2'].map(mapa_descritivo)
-                    df_servicos_revisados['DescrNivel2'] = df_servicos_revisados['CodNivel2'].map(mapa_descritivo2)
-                    df_servicos_revisados['EAP Padrão Nivel 1'] = df_servicos_revisados['Digitos_CodNivel2'] + '.' + ' ' + \
-                                                                  df_servicos_revisados['DescrNivel1']
-                    df_servicos_revisados['EAP Padrão Nivel 2'] = df_servicos_revisados['CodNivel2'] + '.' + ' ' + \
-                                                                  df_servicos_revisados['DescrNivel2']
+        arquivo_servicos_revisados = st.file_uploader("Selecione o arquivo de serviços revisados (.xlsx)",
+                                                      type=["xlsx"])
+        if arquivo_servicos_revisados:
+            arquivo_hash = calcular_hash_arquivo(arquivo_servicos_revisados)
 
-                    # Criar um DataFrame com todos os códigos únicos de df_eap_padrao
-                    codigos_unicos = df_eap_padrao['CodNivel2'].unique()
-                    df_codigos_unicos = pd.DataFrame(codigos_unicos, columns=['CodNivel2'])
+            # Verificar se o arquivo foi alterado
+            if arquivo_hash != st.session_state.get("ultimo_hash_arquivo_servicos", ""):
+                # Reiniciar o processo se o arquivo for alterado
+                st.session_state["processando_servicos"] = False
+                st.session_state["ultimo_hash_arquivo_servicos"] = arquivo_hash
 
-                    # Mesclar df_codigos_unicos com df_servicos_revisados
-                    merged_df = df_codigos_unicos.merge(df_servicos_revisados, on='CodNivel2', how='left')
+                with st.spinner("Processando arquivo de serviços..."):
+                    try:
+                        df_servicos_revisados = pd.read_excel(arquivo_servicos_revisados)
+                        # Converta a coluna 'CodNivel2' para float com o formato especificado
+                        df_servicos_revisados['CodNivel2'] = df_servicos_revisados['CodNivel2'].apply(
+                            lambda x: '{:0>5.2f}'.format(float(x)))
+                        # Converter a coluna 'CodNivel2' para string
+                        df_servicos_revisados['CodNivel2'] = df_servicos_revisados['CodNivel2'].astype(str)
+                        # Extrair os dígitos antes do ponto da coluna 'CodNivel2'
+                        df_servicos_revisados['Digitos_CodNivel2'] = \
+                        df_servicos_revisados['CodNivel2'].str.split('.').str[0]
+                        # Mapear os códigos da coluna 'Digitos_CodNivel2' no DataFrame df_servicos_revisados com os descritivos correspondentes no DataFrame df_eap_padrao
+                        df_servicos_revisados['DescrNivel1'] = df_servicos_revisados['Digitos_CodNivel2'].map(
+                            mapa_descritivo)
+                        df_servicos_revisados['DescrNivel2'] = df_servicos_revisados['CodNivel2'].map(mapa_descritivo2)
+                        df_servicos_revisados['EAP Padrão Nivel 1'] = df_servicos_revisados[
+                                                                          'Digitos_CodNivel2'] + '.' + ' ' + \
+                                                                      df_servicos_revisados['DescrNivel1']
+                        df_servicos_revisados['EAP Padrão Nivel 2'] = df_servicos_revisados['CodNivel2'] + '.' + ' ' + \
+                                                                      df_servicos_revisados['DescrNivel2']
 
-                    # Preencher valores nulos com 0 na coluna 'Preço Total'
-                    merged_df['Preço Total'].fillna(0, inplace=True)
+                        # Criar um DataFrame com todos os códigos únicos de df_eap_padrao
+                        codigos_unicos = df_eap_padrao['CodNivel2'].unique()
+                        df_codigos_unicos = pd.DataFrame(codigos_unicos, columns=['CodNivel2'])
 
-                    # Agrupar os dados e somar os valores do preço total por código e tipo
-                    agrupado_df = merged_df.groupby(['CodNivel2', 'Tipo'])['Preço Total'].sum().reset_index()
+                        # Mesclar df_codigos_unicos com df_servicos_revisados
+                        merged_df = df_codigos_unicos.merge(df_servicos_revisados, on='CodNivel2', how='left')
 
-                    # Criar o DataFrame final conforme solicitado
-                    excecoes = ['05.04', '06.06', '07.10', '08.11', '09.10', '10.07', '11.08', '12.08', '13.07', '14.06',
-                                '15.06', '16.07', '17.13', '18.05', '19.06', '20.05', '22.09', '23.16',
-                                '24.07', '25.03', '27.03', '29.05']
-                    tipos = ['MAT | TERC | ADM', 'MO', 'EST']
-                    resultados = []
+                        # Preencher valores nulos com 0 na coluna 'Preço Total'
+                        merged_df['Preço Total'].fillna(0, inplace=True)
 
-                    for codigo in codigos_unicos:
+                        # Agrupar os dados e somar os valores do preço total por código e tipo
+                        agrupado_df = merged_df.groupby(['CodNivel2', 'Tipo'])['Preço Total'].sum().reset_index()
+
+                        # Criar o DataFrame final conforme solicitado
+                        excecoes = ['05.04', '06.06', '07.10', '08.11', '09.10', '10.07', '11.08', '12.08', '13.07',
+                                    '14.06',
+                                    '15.06', '16.07', '17.13', '18.05', '19.06', '20.05', '22.09', '23.16',
+                                    '24.07', '25.03', '27.03', '29.05']
                         tipos = ['MAT | TERC | ADM', 'MO', 'EST']
+                        resultados = []
 
-                        if codigo.endswith('.00') and 'MO' in tipos:
-                            tipos.remove('MO')
-                        if codigo == '05.10' and 'MAT | TERC | ADM' in tipos:
-                            tipos.remove('MAT | TERC | ADM')
-                        if codigo in ['05.11', '05.12'] and 'MO' in tipos:
-                            tipos.remove('MO')
-                        if codigo in ['31.00', '32.00']:
-                            tipos = ['EST']
-                        if codigo >= '01.00' and codigo <= '04.42':
-                            tipos = ['MAT | TERC | ADM', 'EST']
-                        if codigo in excecoes:
-                            tipos = ['MO', 'EST']
+                        for codigo in codigos_unicos:
+                            tipos = ['MAT | TERC | ADM', 'MO', 'EST']
 
-                        for tipo in tipos:
-                            custo = agrupado_df[(agrupado_df['CodNivel2'] == codigo) & (agrupado_df['Tipo'] == tipo)][
-                                'Preço Total'].sum()
-                            resultados.append([codigo, tipo, custo])
-                    df_resultado = pd.DataFrame(resultados, columns=['CodNivel2', 'Tipo', 'Custo'])
-                    st.write("Resultado agrupado:")
-                    st.dataframe(df_resultado)
+                            if codigo.endswith('.00') and 'MO' in tipos:
+                                tipos.remove('MO')
+                            if codigo == '05.10' and 'MAT | TERC | ADM' in tipos:
+                                tipos.remove('MAT | TERC | ADM')
+                            if codigo in ['05.11', '05.12'] and 'MO' in tipos:
+                                tipos.remove('MO')
+                            if codigo in ['31.00', '32.00']:
+                                tipos = ['EST']
+                            if codigo >= '01.00' and codigo <= '04.42':
+                                tipos = ['MAT | TERC | ADM', 'EST']
+                            if codigo in excecoes:
+                                tipos = ['MO', 'EST']
 
-                    # Botão para baixar o arquivo de resultado
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        df_resultado.to_excel(writer, index=False, sheet_name='Resultado')
-                    st.download_button("Baixar Resultado", data=output.getvalue(), file_name="resultado_tratado.xlsx",
-                                       mime="application/vnd.ms-excel")
-                    st.success("Processamento concluído com sucesso!")
-                    st.session_state["processando_servicos"] = True
-                except Exception as e:
-                    st.error(f"Erro: {e}")
+                            for tipo in tipos:
+                                custo = \
+                                agrupado_df[(agrupado_df['CodNivel2'] == codigo) & (agrupado_df['Tipo'] == tipo)][
+                                    'Preço Total'].sum()
+                                resultados.append([codigo, tipo, custo])
+                        df_resultado = pd.DataFrame(resultados, columns=['CodNivel2', 'Tipo', 'Custo'])
+
+                        # Adicionar as colunas 'Cliente' e 'Obra' ao DataFrame
+                        df_resultado['Cliente'] = cliente
+                        df_resultado['Obra'] = obra
+
+                        # Reorganizar as colunas na ordem desejada
+                        df_resultado = df_resultado[['Cliente', 'Obra', 'CodNivel2', 'Tipo', 'Custo']]
+                        st.write("Resultado agrupado:")
+                        st.dataframe(df_resultado, hide_index=True, width=1000)
+
+                        # Botão para baixar o arquivo de resultado
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                            df_resultado.to_excel(writer, index=False, sheet_name='Resultado')
+                        # Soma da coluna 'Custo' e formatação em R$
+                        soma_total = df_resultado['Custo'].sum()
+                        soma_formatada = f"R$ {soma_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        # Exibir o valor total formatado no Streamlit
+                        st.markdown(f"""
+                            <div style="
+                                font-family: 'Montserrat', sans-serif;
+                                font-size: 20px;
+                                font-weight: bold;
+                                color: #2F318F;
+                                text-align: center;
+                                margin: 20px 0;">
+                                Custo Total: {soma_formatada}
+                            </div>
+                        """, unsafe_allow_html=True)
+
+                        st.download_button("Baixar Resultado", data=output.getvalue(),
+                                           file_name="resultado_tratado.xlsx",
+                                           mime="application/vnd.ms-excel")
+
+                        st.success("Processamento concluído com sucesso!")
+                        st.session_state["processando_servicos"] = True
+                        # Dentro de abrir_arquivo_servicos(), ao final do processamento:
+                        st.session_state['df_resultado'] = df_resultado
+
+                    except Exception as e:
+                        st.error(f"Erro: {e}")
 
 # Função para converter imagem em Base64
 def carregar_imagem_base64(caminho):
     with open(caminho, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode("utf-8")
+
 
 # Caminho correto da imagem
 caminho_imagem = "imagens/logo-tatico-branco.png"  # Substitua pelo caminho correto
@@ -275,8 +345,47 @@ caminho_imagem = "imagens/logo-tatico-branco.png"  # Substitua pelo caminho corr
 # Carrega a imagem em Base64
 imagem_base64 = carregar_imagem_base64(caminho_imagem)
 
-# Configuração inicial
-st.set_page_config(page_title="Tratamento de Dados", page_icon="imagens/TATICO_logotipo_01_colorido simbolo.png", layout="centered")
+
+# Função para exportar o DataFrame para o Data Warehousing do Microsoft Fabric
+def exportar_para_data_warehouse(df):
+    try:
+        with st.spinner('Exportando dados para o Data Warehouse...'):
+            # Conexão com o Data Warehouse
+            conn = pyodbc.connect(
+                 'DRIVER={ODBC Driver 18 for SQL Server};'
+                 'SERVER=4drgbcw6ycbedl7do4lwp2tafy-qkihnfj4j3yu7iripszhyt3nqq.datawarehouse.fabric.microsoft.com;'
+                 'DATABASE=DATA_WAREHOUSE;'
+                'Authentication=ActiveDirectoryInteractive;'
+                'Encrypt=yes;'
+                'TrustServerCertificate=yes;'
+            )
+            cursor = conn.cursor()
+
+            # Criar tabela temporária no Data Warehouse (caso necessário)
+            cursor.execute("""
+                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Orcamentos' AND xtype='U')
+                CREATE TABLE Orcamentos (
+                    Cliente VARCHAR(255),
+                    Obra VARCHAR(255),
+                    CodNivel2 VARCHAR(50),
+                    Tipo VARCHAR(50),
+                    Custo FLOAT
+                )
+            """)
+            conn.commit()
+
+            # Inserir dados no Data Warehouse
+            for _, row in df.iterrows():
+                cursor.execute("""
+                    INSERT INTO Orcamentos (Cliente, Obra, CodNivel2, Tipo, Custo)
+                    VALUES (?, ?, ?, ?, ?)
+                """, row['Cliente'], row['Obra'], row['CodNivel2'], row['Tipo'], row['Custo'])
+            conn.commit()
+            conn.close()
+
+            st.success("Dados exportados para o Data Warehouse com sucesso!")
+    except Exception as e:
+        st.error(f"Erro ao exportar para o Data Warehouse: {e}")
 
 # Estilos CSS customizados
 custom_css = """
@@ -287,7 +396,7 @@ custom_css = """
             font-family: 'Montserrat', sans-serif;
             background-color: #f5f7f9;
         }
-        
+
         /* Container do título (azul) */
         .header-container {
             background-color: #2F318F; /* Azul */
@@ -296,7 +405,24 @@ custom_css = """
             text-align: left;
             font-size: 28px;
             font-weight: 700;
-            border-radius: 8px 8px 0 0;
+            border-radius: 8px 8px 8px 8px;
+        }
+         /* Estilização geral dos inputs */
+        .stTextInput>div>div>input {
+            border: 2px solid #2F318F; /* Cor azul no header */
+            border-radius: 8px;
+            box-shadow: none;
+        }
+
+        .stTextInput>div>div>input:focus {
+            outline: none;
+            border: 2px solid #2F318F; /* Cor azul no foco */
+            box-shadow: 0 0 5px rgba(47, 49, 143, 0.3);
+        }
+
+        /* Hover nos inputs */
+        .stTextInput>div>div>input:hover {
+            border-color: #2F318F;
         }
 
         /* Estilo para os títulos menores */
@@ -333,7 +459,7 @@ custom_css = """
             color: #2F318F; /* Cor do texto no hover */
             border-color: #2F318F;
         }
-        
+
     /* Hover personalizado para botões gerais */
     .stButton>button:hover {
         color: #2F318F; /* Cor do texto no hover */
@@ -344,7 +470,6 @@ custom_css = """
 
 # Aplicar CSS
 st.markdown(custom_css, unsafe_allow_html=True)
-
 
 # HTML do cabeçalho
 st.markdown(f"""
@@ -359,10 +484,17 @@ st.markdown(f"""
 # Container branco englobando as seções
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
 
+# Inputs para o nome do cliente e da obra
+st.markdown("<div class='section-title'>Dados do Projeto</div>", unsafe_allow_html=True)
+cliente = st.text_input("Digite o nome do cliente:", key="nome_cliente").upper()
+obra = st.text_input("Digite o nome da obra:", key="nome_obra").upper()
+
+
 # Seção 1
-st.markdown("<div class='section-title'>1. Importar EAP Padrão</div>", unsafe_allow_html=True)
-st.write("Selecione o arquivo EAP Padrão (.xlsx)")
-abrir_eap_padrao()
+if cliente and obra:
+    st.markdown("<div class='section-title'>1. Importar EAP Padrão</div>", unsafe_allow_html=True)
+    st.write("Selecione o arquivo EAP Padrão (.xlsx)")
+    abrir_eap_padrao()
 
 # Seção 2
 if st.session_state["etapa1_concluida"]:
@@ -382,6 +514,14 @@ if st.session_state["processando_orcamento"]:
     st.write("Selecione o arquivo de serviços revisados (.xlsx)")
     abrir_arquivo_servicos()
 
+# Apenas exibir o botão "Exportar para o Data Warehouse" após o processamento de serviços
+try:
+    if 'df_resultado' in st.session_state and st.session_state["processando_servicos"]:
+        if st.button("Exportar para o Data Warehouse"):
+            exportar_para_data_warehouse(st.session_state['df_resultado'])
+except Exception as e:
+    st.error(f"Erro: {e}")
+
 # Obter o ano atual
 ano_atual = datetime.now().year
 
@@ -393,3 +533,5 @@ rodape = f"""
     </footer>
 """
 st.markdown(rodape, unsafe_allow_html=True)
+
+
