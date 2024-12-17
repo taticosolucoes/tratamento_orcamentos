@@ -3,7 +3,6 @@ import pandas as pd
 import io
 from datetime import datetime
 import base64
-import pyodbc
 import hashlib
 
 # Configuração inicial
@@ -293,11 +292,11 @@ def abrir_arquivo_servicos():
                         df_resultado = pd.DataFrame(resultados, columns=['CodNivel2', 'Tipo', 'Custo'])
 
                         # Adicionar as colunas 'Cliente' e 'Obra' ao DataFrame
-                        df_resultado['Cliente'] = cliente
-                        df_resultado['Obra'] = obra
+                        #df_resultado['Cliente'] = cliente
+                        #df_resultado['Obra'] = obra
 
                         # Reorganizar as colunas na ordem desejada
-                        df_resultado = df_resultado[['Cliente', 'Obra', 'CodNivel2', 'Tipo', 'Custo']]
+                        df_resultado = df_resultado[['CodNivel2', 'Tipo', 'Custo']]
                         st.write("Resultado agrupado:")
                         st.dataframe(df_resultado, hide_index=True, width=1000)
 
@@ -344,48 +343,6 @@ caminho_imagem = "imagens/logo-tatico-branco.png"  # Substitua pelo caminho corr
 
 # Carrega a imagem em Base64
 imagem_base64 = carregar_imagem_base64(caminho_imagem)
-
-
-# Função para exportar o DataFrame para o Data Warehousing do Microsoft Fabric
-def exportar_para_data_warehouse(df):
-    try:
-        with st.spinner('Exportando dados para o Data Warehouse...'):
-            # Conexão com o Data Warehouse
-            conn = pyodbc.connect(
-                 'DRIVER={ODBC Driver 18 for SQL Server};'
-                 'SERVER=4drgbcw6ycbedl7do4lwp2tafy-qkihnfj4j3yu7iripszhyt3nqq.datawarehouse.fabric.microsoft.com;'
-                 'DATABASE=DATA_WAREHOUSE;'
-                'Authentication=ActiveDirectoryInteractive;'
-                'Encrypt=yes;'
-                'TrustServerCertificate=yes;'
-            )
-            cursor = conn.cursor()
-
-            # Criar tabela temporária no Data Warehouse (caso necessário)
-            cursor.execute("""
-                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Orcamentos' AND xtype='U')
-                CREATE TABLE Orcamentos (
-                    Cliente VARCHAR(255),
-                    Obra VARCHAR(255),
-                    CodNivel2 VARCHAR(50),
-                    Tipo VARCHAR(50),
-                    Custo FLOAT
-                )
-            """)
-            conn.commit()
-
-            # Inserir dados no Data Warehouse
-            for _, row in df.iterrows():
-                cursor.execute("""
-                    INSERT INTO Orcamentos (Cliente, Obra, CodNivel2, Tipo, Custo)
-                    VALUES (?, ?, ?, ?, ?)
-                """, row['Cliente'], row['Obra'], row['CodNivel2'], row['Tipo'], row['Custo'])
-            conn.commit()
-            conn.close()
-
-            st.success("Dados exportados para o Data Warehouse com sucesso!")
-    except Exception as e:
-        st.error(f"Erro ao exportar para o Data Warehouse: {e}")
 
 # Estilos CSS customizados
 custom_css = """
@@ -485,16 +442,16 @@ st.markdown(f"""
 st.markdown("<div class='main-container'>", unsafe_allow_html=True)
 
 # Inputs para o nome do cliente e da obra
-st.markdown("<div class='section-title'>Dados do Projeto</div>", unsafe_allow_html=True)
-cliente = st.text_input("Digite o nome do cliente:", key="nome_cliente").upper()
-obra = st.text_input("Digite o nome da obra:", key="nome_obra").upper()
+#st.markdown("<div class='section-title'>Dados do Projeto</div>", unsafe_allow_html=True)
+#cliente = st.text_input("Digite o nome do cliente:", key="nome_cliente").upper()
+#obra = st.text_input("Digite o nome da obra:", key="nome_obra").upper()
 
 
 # Seção 1
-if cliente and obra:
-    st.markdown("<div class='section-title'>1. Importar EAP Padrão</div>", unsafe_allow_html=True)
-    st.write("Selecione o arquivo EAP Padrão (.xlsx)")
-    abrir_eap_padrao()
+#if cliente and obra:
+st.markdown("<div class='section-title'>1. Importar EAP Padrão</div>", unsafe_allow_html=True)
+st.write("Selecione o arquivo EAP Padrão (.xlsx)")
+abrir_eap_padrao()
 
 # Seção 2
 if st.session_state["etapa1_concluida"]:
@@ -513,14 +470,6 @@ if st.session_state["processando_orcamento"]:
     st.markdown("<div class='section-title'>4. Importar Serviços</div>", unsafe_allow_html=True)
     st.write("Selecione o arquivo de serviços revisados (.xlsx)")
     abrir_arquivo_servicos()
-
-# Apenas exibir o botão "Exportar para o Data Warehouse" após o processamento de serviços
-try:
-    if 'df_resultado' in st.session_state and st.session_state["processando_servicos"]:
-        if st.button("Exportar para o Data Warehouse"):
-            exportar_para_data_warehouse(st.session_state['df_resultado'])
-except Exception as e:
-    st.error(f"Erro: {e}")
 
 # Obter o ano atual
 ano_atual = datetime.now().year
