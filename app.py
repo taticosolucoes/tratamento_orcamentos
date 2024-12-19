@@ -299,7 +299,6 @@ def abrir_arquivo_servicos():
                         df_resultado = df_resultado[['CodNivel2', 'Tipo', 'Custo']]
                         st.write("Resultado agrupado:")
                         st.dataframe(df_resultado, hide_index=True, width=1000)
-""
                         # Botão para baixar o arquivo de resultado
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
